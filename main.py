@@ -17,21 +17,14 @@ import concurrent.futures
 from geopandas.tools import sjoin
 
 
-# #MEMORY USAGE VARIABLES
-# start_mem = resources.getrusage(resources.RUSAGE_SELF).ru_maxrss
-# delta_mem = 0
-# max_memory = 0
-
-errorCount = 0
-
 #PARAMETER
-SegmentDistance = 100
+SegmentDistance = 200
 bufferRule = 3500
 
 #DATA PATHS
-totalStockPath = r"Testdaten/stock_32633.shp"
-locationsPath = r"Testdaten/Blankenhagen_32633.shp"
-dsmPath = r"Testdaten/SRTM_D_32633.tif"
+totalStockPath = r"Testdaten/MV/wka_standorte_32633.shp"
+locationsPath = r"Testdaten/MV/ortslagen_32633.shp"
+dsmPath = r"Testdaten/SRTM_D_32632.tif"
 
 
 #load DSM-Raster
@@ -47,7 +40,7 @@ locations = locations.explode(ignore_index=True)
 
 
 #progressBar Init
-#pbar = tqdm(total=len(locations)/2)
+pbar = tqdm(total=len(locations))
 
 #init Results
 allowedAreasFinalList = []
@@ -63,6 +56,13 @@ def polygonToPoints(locationGeom, SegmentDistance):
     for i in np.arange(0, line.length, SegmentDistance):
         val = line.interpolate(i)
         points.append([val.x, val.y])
+    points = np.array(points)
+    return points
+
+def getCentroidAsObserver(locationGeom):
+    points = []
+    val = locationGeom.centroid
+    points.append([val.x, val.y])
     points = np.array(points)
     return points
 
@@ -136,7 +136,7 @@ def plotPolygon(observer, turbines, observerList, area1, area2):
             xlArea1, ylArea1 = area.exterior.xy
             axs.plot(xlArea1, ylArea1, color="orange", linestyle='dashed')
         
-    if len(area2)>0:
+    if len(area2)>1:
         for area in area2:
             xlArea2, ylArea2 = area.exterior.xy
             axs.fill(xlArea2, ylArea2, alpha=0.8, facecolor="indianred", edgecolor='orangered') #Plot forbiddenAreas
@@ -164,7 +164,35 @@ def generateAngleGroups(bearingList, observer):
                     group.append(angle)
                     foundGroup = True
             if foundGroup == False:
-                groups.append([angle])
+                groups.append([angle])   
+    # Überprüfe Gruppen ob sie sich am Scheitelpunkt befinden
+    groupTemp = []
+    for group in groups:
+        if max(group) >= 120 or min(group)<=-120:
+            groupTemp.append(group)
+            groups.remove(group)
+
+    if len(groupTemp)>1:
+        groupTemp = sum(groupTemp, [])
+        groupTemp = np.array(groupTemp)
+        groupTemp = np.where(groupTemp < 0, groupTemp+360, groupTemp)
+        groupTemp = np.sort(groupTemp)
+        sGroups =[]
+        for angle in groupTemp:
+            if len(sGroups) == 0:
+                sGroups.append([angle])
+            else:
+                foundGroup2 = False
+                for i, group in enumerate(sGroups):
+                    if max(group) >= angle - 60:
+                        group.append(angle)
+                        foundGroup2 = True
+                if foundGroup2 == False:
+                    sGroups.append([angle]) 
+        
+        groups = groups + sGroups
+    else:
+        groups = groups + groupTemp
     return groups   
 
 
@@ -211,8 +239,11 @@ def evaluateGroups(groups, observer):
 
     # Iteration through groups list
     for i, group in enumerate(groups):
-        minG = min(group)
-        maxG = max(group)
+        group = np.array(group)
+        group = np.where(group < 0, group+360, group)
+        group = np.sort(group)
+        minG = np.min(group)
+        maxG = np.max(group)
         angleRange = maxG-minG
         left = 0
         right = 0
@@ -221,14 +252,12 @@ def evaluateGroups(groups, observer):
             left = minG - 60
             right = maxG + 60
             areaAngles = np.array([left, minG, maxG, right])
-            #areaAngles = np.where(areaAngles < 0, areaAngles + 360, areaAngles)
             forbiddenAreasGroup.extend(generateAreas (areaAngles, observer))
         
         else:
             left = minG - (120-angleRange)
             right = maxG + (120-angleRange)
             areaAngles = np.array([left, minG, maxG, right])
-            #areaAngles = np.where(areaAngles < 0, areaAngles + 360, areaAngles)
             restrictedAreasGroup.extend(generateAreas (areaAngles, observer))
         
     return restrictedAreasGroup, forbiddenAreasGroup  
@@ -248,15 +277,16 @@ def calculateLocation(location):
     global max_memory
     
     #Get location geometry and calculate ObserverPoins
-    locationGeom = location.geometry
+    locationGeom = location[1].geometry
     observerList = polygonToPoints(locationGeom, SegmentDistance)
+    #observerList = getCentroidAsObserver(locationGeom)
     
     #Get affected turbines by location
     locationStock = getStock(locationGeom, totalStock)
     
     
     #Calculates enclosure for each observer
-    pbar = tqdm(total=len(observerList))
+    #pbar = tqdm(total=len(observerList))
     for observer in observerList:
         #Get affected turbines by observer
         observerGeom = Point(observer[0], observer[1])
@@ -266,8 +296,8 @@ def calculateLocation(location):
         observerHeight = point_query(observerGeom.wkt,dsmData, affine=transform, nodata=0)
         for targetId, target in observerStock.iterrows():
             targetGeom = target.geometry
-            #hubHeight = float(target.Nabenhoehe)
-            hubHeight = float(target.Height)
+            hubHeight = float(target.hoehe)
+            #hubHeight = float(target.Height)
             sight = checkLineOfSight (observerGeom, targetGeom, dsmData, transform, hubHeight, observerHeight)
             if sight == False:
                 observerStock = observerStock.drop(target.name)
@@ -288,33 +318,26 @@ def calculateLocation(location):
                 restrictedAreasList.extend(restrictedArea)
                 forbiddenAreasList.extend(forbiddenArea)
             
-            pbar.update(1)
+            #pbar.update(1)
             #plotPolygon(observer, observerStockNP, observerList, restrictedArea, forbiddenArea)
     bufferAllowedArea = locationGeom.buffer(bufferRule)
     allowedArea = gpd.GeoDataFrame(geometry=gpd.GeoSeries(bufferAllowedArea), crs = totalStock.crs)
     restrictedArea = gpd.GeoDataFrame(geometry=gpd.GeoSeries(restrictedAreasList), crs = totalStock.crs)
     forbiddenArea = gpd.GeoDataFrame(geometry=gpd.GeoSeries(forbiddenAreasList), crs = totalStock.crs)    
-    
-    warningAreaList = []
-    for area in restrictedArea.itterrow():
-        warningAreaList.extend(restrictedArea.geometry.intersection(area.geometry))
-    
-    
+
     allowedAreasFinalList.append(bufferAllowedArea)
-    # restrictedAreasFinalList.append(restrictedArea.geometry.unary_union)
-    # forbiddenAreasFinalList.append(forbiddenArea.geometry.unary_union)
-    restrictedAreasFinalList.extend(restrictedArea)
-    forbiddenAreasFinalList.extend(forbiddenArea)
+    restrictedAreasFinalList.append(restrictedArea.geometry.unary_union)
+    forbiddenAreasFinalList.append(forbiddenArea.geometry.unary_union)
     
-    base = allowedArea.plot(color='green')
-    restrictedArea.plot(ax=base, color= 'orange')
-    forbiddenArea.plot(ax=base, color= 'red')
-    gpd.GeoSeries(locationGeom).plot(ax=base, color= 'grey')
-    plt.plot()
-    plt.show()
+    # base = allowedArea.plot(color='green')
+    # restrictedArea.plot(ax=base, color= 'orange')
+    # forbiddenArea.plot(ax=base, color= 'red')
+    # gpd.GeoSeries(locationGeom).plot(ax=base, color= 'grey')
+    # plt.plot()
+    # plt.show()
     
-    pbar.close()  
-    #pbar.update(1)
+    #pbar.close()  
+    pbar.update(1)
     
 
 # MAIN
@@ -325,12 +348,12 @@ def main():
     #get calculation time
     st = time.time()
     #Calculates enclosure for each location
-    # with concurrent.futures.ThreadPoolExecutor() as executer:
-    #     executer.map(calculateLocation, locations)
+    with concurrent.futures.ThreadPoolExecutor() as executer:
+        executer.map(calculateLocation, locations.iterrows())
         
     
-    for id, location in locations.iterrows():
-         calculateLocation(location)
+    # for location in locations.iterrows():
+    #       calculateLocation(location)
     
     
     allowedAreasFinal = gpd.GeoDataFrame(geometry=gpd.GeoSeries(allowedAreasFinalList), crs = totalStock.crs)
@@ -345,11 +368,11 @@ def main():
     restrictedAreasExport  = gpd.GeoDataFrame(geometry=gpd.GeoSeries([restrictedAreasFinal.geometry.unary_union]), crs = totalStock.crs)
     forbiddenAreasExport = gpd.GeoDataFrame(geometry=gpd.GeoSeries([forbiddenAreasFinal.geometry.unary_union]), crs = totalStock.crs)
     
-    allowedAreasExport.to_file('Ergebnisse/allowedAreas.shp')  
-    restrictedAreasExport.to_file('Ergebnisse/restrictedAreas.shp')  
-    forbiddenAreasExport.to_file('Ergebnisse/forbiddenAreas.shp')  
+    allowedAreasExport.to_file('Ergebnisse/MV/allowedAreas.shp')  
+    restrictedAreasExport.to_file('Ergebnisse/MV/restrictedAreas.shp')  
+    forbiddenAreasExport.to_file('Ergebnisse/MV/forbiddenAreas.shp')  
     
-    #pbar.close()  
+    pbar.close()  
 
     
     et = time.time()   

@@ -11,7 +11,7 @@ from shapely import Point, Polygon, LineString, distance
 import math
 from tqdm import tqdm
 import rasterio
-from rasterstats import point_query
+#from rasterstats import point_query
 import time
 import concurrent.futures
 from geopandas.tools import sjoin
@@ -22,8 +22,8 @@ SegmentDistance = 200
 bufferRule = 3500
 
 #DATA PATHS
-totalStockPath = r"Testdaten/MV/wka_standorte_32633.shp"
-locationsPath = r"Testdaten/MV/ortslagen_32633.shp"
+totalStockPath = r"Testdaten/Windbetrieb_Standorte_32632.shp"
+locationsPath = r"Testdaten/sie01_f_32632.shp"
 dsmPath = r"Testdaten/SRTM_D_32632.tif"
 
 
@@ -164,35 +164,21 @@ def generateAngleGroups(bearingList, observer):
                     group.append(angle)
                     foundGroup = True
             if foundGroup == False:
-                groups.append([angle])   
-    # Überprüfe Gruppen ob sie sich am Scheitelpunkt befinden
-    groupTemp = []
-    for group in groups:
-        if max(group) >= 120 or min(group)<=-120:
-            groupTemp.append(group)
+                groups.append([angle])
+    
+    tempGroups = groups
+    newGroup =[]
+    for group in tempGroups:
+        if min(group) < -120:
             groups.remove(group)
-
-    if len(groupTemp)>1:
-        groupTemp = sum(groupTemp, [])
-        groupTemp = np.array(groupTemp)
-        groupTemp = np.where(groupTemp < 0, groupTemp+360, groupTemp)
-        groupTemp = np.sort(groupTemp)
-        sGroups =[]
-        for angle in groupTemp:
-            if len(sGroups) == 0:
-                sGroups.append([angle])
-            else:
-                foundGroup2 = False
-                for i, group in enumerate(sGroups):
-                    if max(group) >= angle - 60:
-                        group.append(angle)
-                        foundGroup2 = True
-                if foundGroup2 == False:
-                    sGroups.append([angle]) 
+            normGroup = [i + 360 for i in group]
+            newGroup = newGroup + normGroup 
+        if max(group) > 120:
+            groups.remove(group)
+            newGroup = newGroup + group
+    if len(newGroup)>0:
+        groups.append(newGroup)  
         
-        groups = groups + sGroups
-    else:
-        groups = groups + groupTemp
     return groups   
 
 
@@ -239,11 +225,8 @@ def evaluateGroups(groups, observer):
 
     # Iteration through groups list
     for i, group in enumerate(groups):
-        group = np.array(group)
-        group = np.where(group < 0, group+360, group)
-        group = np.sort(group)
-        minG = np.min(group)
-        maxG = np.max(group)
+        minG = min(group)
+        maxG = max(group)
         angleRange = maxG-minG
         left = 0
         right = 0
@@ -278,8 +261,8 @@ def calculateLocation(location):
     
     #Get location geometry and calculate ObserverPoins
     locationGeom = location[1].geometry
-    observerList = polygonToPoints(locationGeom, SegmentDistance)
-    #observerList = getCentroidAsObserver(locationGeom)
+    #observerList = polygonToPoints(locationGeom, SegmentDistance)
+    observerList = getCentroidAsObserver(locationGeom)
     
     #Get affected turbines by location
     locationStock = getStock(locationGeom, totalStock)
@@ -296,12 +279,12 @@ def calculateLocation(location):
         observerHeight = point_query(observerGeom.wkt,dsmData, affine=transform, nodata=0)
         for targetId, target in observerStock.iterrows():
             targetGeom = target.geometry
-            hubHeight = float(target.hoehe)
+            hubHeight = float(target.NABENHOEHE)
             #hubHeight = float(target.Height)
             sight = checkLineOfSight (observerGeom, targetGeom, dsmData, transform, hubHeight, observerHeight)
             if sight == False:
                 observerStock = observerStock.drop(target.name)
-            
+               
         #Calculation continues if turbines are nearby
         if observerStock.size != 0:
             #change observer to a list
